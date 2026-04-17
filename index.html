@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Face Mesh Gesture Demo - Symmetry Refined</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #000;
+        }
+        #input_video {
+            display: none;
+        }
+        #output_canvas {
+            width: 100vw;
+            height: 100vh;
+            object-fit: cover;
+            transform: scaleX(-1);
+        }
+        .ui-layer {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            background: rgba(0,0,0,0.7);
+            padding: 15px;
+            border-radius: 10px;
+            font-family: sans-serif;
+            pointer-events: none;
+            z-index: 10;
+            border: 1px solid rgba(255,255,255,0.2);
+        }
+        .status-badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-weight: bold;
+            margin-top: 5px;
+            font-size: 0.8em;
+        }
+        .calibrating { background: #ff9800; }
+        .ready { background: #4caf50; }
+    </style>
+</head>
+<body>
+
+    <div class="ui-layer">
+        <div style="font-size: 1.1em; font-weight: bold; margin-bottom: 5px;">Face Exercise Game（変顔ゲーム）</div>
+        <div id="status_text">初期化中...</div>
+        <div id="status_badge" class="status-badge calibrating">CALIBRATING</div>
+        <div style="margin-top: 10px; font-size: 0.8em; opacity: 0.7;">
+            最初に3秒間「真顔（口を閉じる）」を維持してください</div>
+        
+        <div class="color-item"><span class="color-box" style="background: #FF00FF;"></span>口を開ける：赤　口すぼめ：黄</div>
+        <div class="color-item"><span class="color-box" style="background: #FF00FF;"></span>口を閉じて横広げ、眉あげ：青</div>
+        <div class="color-item"><span class="color-box" style="background: #00FF00;"></span>左口角あげ：桃　右口角あげ：緑</div>
+        
+        <div class="color-item"><span class="color-box" style="background: #00FF00;"></span>-----------やりすぎ注意！-----------</div>
+        <div class="color-item"><span class="color-box" style="background: #00FF00;"></span>ゲームで額のしわが増えたり、ほうれい線が</div>
+深くなっても責任は持てません。自己責任で。</div>        
+　
+　　</div>
+
+    <video id="input_video"></video>
+    <canvas id="output_canvas"></canvas>
+
+    <script type="module">
+        const videoElement = document.getElementById('input_video');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const statusText = document.getElementById('status_text');
+        const statusBadge = document.getElementById('status_badge');
+
+        let isCalibrated = false;
+        let calibrationFrames = 0;
+        
+        const CALIBRATION_STEPS = 20; 
+        let baseline = { 
+            mouthOpen: 0, 
+            mouthWidth: 0, 
+            eyebrowDist: 0,
+            leftCornerRaise: 0,
+            rightCornerRaise: 0 
+        };
+
+        function getDistance(p1, p2) {
+            return Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
+        }
+
+        function drawGlow(ctx, x, y, radius, color) {
+            const gradient = ctx.createRadialGradient(x, y, 0, x, y, radius);
+            gradient.addColorStop(0, color);
+            gradient.addColorStop(1, 'transparent');
+            ctx.fillStyle = gradient;
+            ctx.beginPath();
+            ctx.arc(x, y, radius, 0, 2 * Math.PI);
+            ctx.fill();
+        }
+
+        function onResults(results) {
+            if (canvasElement.width !== videoElement.videoWidth) {
+                canvasElement.width = videoElement.videoWidth;
+                canvasElement.height = videoElement.videoHeight;
+            }
+
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+            if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+                const landmarks = results.multiFaceLandmarks[0];
+
+                // ランドマーク描画（薄く）
+                drawConnectors(canvasCtx, landmarks, FACEMESH_TESSELATION, {color: '#FFFFFF20', lineWidth: 1});
+
+                // スケール計算（鼻〜顎）
+                const faceScale = getDistance(landmarks[1], landmarks[152]);
+                
+                // 現在値の計算
+                const curMouthOpen = getDistance(landmarks[13], landmarks[14]) / faceScale;
+                const curMouthWidth = getDistance(landmarks[61], landmarks[291]) / faceScale;
+                const curEyebrow = getDistance(landmarks[52], landmarks[159]) / faceScale;
+
+                // 口角の「上がり」計算
+                const mouthCenterY = (landmarks[13].y + landmarks[14].y) / 2;
+                const curLeftCornerRaise = (mouthCenterY - landmarks[291].y) / faceScale;
+                const curRightCornerRaise = (mouthCenterY - landmarks[61].y) / faceScale;
+
+                if (!isCalibrated) {
+                    // キャリブレーション
+                    baseline.mouthOpen += curMouthOpen;
+                    baseline.mouthWidth += curMouthWidth;
+                    baseline.eyebrowDist += curEyebrow;
+                    baseline.leftCornerRaise += curLeftCornerRaise;
+                    baseline.rightCornerRaise += curRightCornerRaise;
+                    calibrationFrames++;
+
+                    statusText.innerText = `解析中... ${Math.round(calibrationFrames/CALIBRATION_STEPS*100)}%`;
+
+                    if (calibrationFrames >= CALIBRATION_STEPS) {
+                        baseline.mouthOpen /= CALIBRATION_STEPS;
+                        baseline.mouthWidth /= CALIBRATION_STEPS;
+                        baseline.eyebrowDist /= CALIBRATION_STEPS;
+                        baseline.leftCornerRaise /= CALIBRATION_STEPS;
+                        baseline.rightCornerRaise /= CALIBRATION_STEPS;
+                        isCalibrated = true;
+                        statusText.innerText = "準備完了";
+                        statusBadge.innerText = "READY";
+                        statusBadge.className = "status-badge ready";
+                    }
+                } else {
+                    // --- 判定用フラグ ---
+                    const isMouthOpen = curMouthOpen > baseline.mouthOpen * 1.5;
+                    //const isLeftUp = curLeftCornerRaise > baseline.leftCornerRaise + 0.04;
+                    //const isRightUp = curRightCornerRaise > baseline.rightCornerRaise + 0.04;
+                    const isLeftUp = curLeftCornerRaise > baseline.leftCornerRaise + 0.02;
+                    const isRightUp = curRightCornerRaise > baseline.rightCornerRaise + 0.02;
+                    
+
+
+
+
+                    // 左右の高さの差が小さい（0.03以内）
+                    const isSymmetrical = Math.abs(curLeftCornerRaise - curRightCornerRaise) < 0.03;
+
+                    // 1. 口を大きく開ける -> 赤
+                    if (curMouthOpen > baseline.mouthOpen * 2.5) {
+                        const x = (landmarks[13].x + landmarks[14].x) / 2 * canvasElement.width;
+                        const y = (landmarks[13].y + landmarks[14].y) / 2 * canvasElement.height;
+                        drawGlow(canvasCtx, x, y, 150, 'rgba(255, 0, 0, 0.7)');
+                    }
+
+                    // 2. 眉を上げる -> 青
+                    if (curEyebrow > baseline.eyebrowDist * 1.3) {
+                        const lEb = landmarks[52];
+                        const rEb = landmarks[282];
+                        drawGlow(canvasCtx, lEb.x * canvasElement.width, lEb.y * canvasElement.height, 120, 'rgba(0, 0, 255, 0.7)');
+                        drawGlow(canvasCtx, rEb.x * canvasElement.width, rEb.y * canvasElement.height, 120, 'rgba(0, 0, 255, 0.7)');
+                    }
+
+                    // 3. 口をすぼめる -> 黄
+                    if (curMouthWidth < baseline.mouthWidth * 0.85) {
+                        const x = (landmarks[61].x + landmarks[291].x) / 2 * canvasElement.width;
+                        const y = (landmarks[61].y + landmarks[291].y) / 2 * canvasElement.height;
+                        drawGlow(canvasCtx, x, y, 150, 'rgba(255, 255, 0, 0.7)');
+                    }
+
+                    // 4. 「ニー」の口 -> 青
+                    // 条件：口を閉じている 且つ 横幅が広い 且つ 左右の高さがほぼ同じ
+                    if (!isMouthOpen && curMouthWidth > baseline.mouthWidth * 1.2 && isSymmetrical) {
+                        const x = (landmarks[61].x + landmarks[291].x) / 2 * canvasElement.width;
+                        const y = (landmarks[61].y + landmarks[291].y) / 2 * canvasElement.height;
+                        drawGlow(canvasCtx, x, y, 180, 'rgba(0, 0, 255, 0.7)');
+                    }
+
+                    // 5. 左口角を上げる -> 桃色
+                    // 条件：左のみ上がっている 且つ 口が閉まっている 且つ (ニー判定を除外するため左右差があること)
+                    if (isLeftUp && !isRightUp && !isMouthOpen && !isSymmetrical) {
+                        const x = landmarks[291].x * canvasElement.width;
+                        const y = landmarks[291].y * canvasElement.height;
+                        drawGlow(canvasCtx, x, y, 120, 'rgba(255, 105, 180, 0.7)');
+                    }
+
+                    // 6. 右口角を上げる -> 緑色
+                    // 条件：右のみ上がっている 且つ 左が上がっていない 且つ 口が閉まっている
+                    if (isRightUp && !isLeftUp && !isMouthOpen && !isSymmetrical) {
+                        const x = landmarks[61].x * canvasElement.width;
+                        const y = landmarks[61].y * canvasElement.height;
+                        drawGlow(canvasCtx, x, y, 120, 'rgba(0, 255, 0, 0.7)');
+                    }
+                }
+            }
+            canvasCtx.restore();
+        }
+
+        const faceMesh = new FaceMesh({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`});
+        faceMesh.setOptions({
+            maxNumFaces: 1,
+            refineLandmarks: true,
+            minDetectionConfidence: 0.7,
+            minTrackingConfidence: 0.7
+        });
+        faceMesh.onResults(onResults);
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await faceMesh.send({image: videoElement});
+            },
+            width: 1280,
+            height: 720
+        });
+        camera.start();
+    </script>
+</body>
+</html>
