@@ -174,7 +174,7 @@
                     const isSymmetrical = Math.abs(curLeftCornerRaise - curRightCornerRaise) < 0.03;
 
                     // 1. 口を大きく開ける -> 赤
-                    if (curMouthOpen > baseline.mouthOpen * 2.5) {
+                    if (curMouthOpen > baseline.mouthOpen * 2) {
                         const x = (landmarks[13].x + landmarks[14].x) / 2 * canvasElement.width;
                         const y = (landmarks[13].y + landmarks[14].y) / 2 * canvasElement.height;
                         drawGlow(canvasCtx, x, y, 150, 'rgba(255, 0, 0, 0.7)');
